@@ -88,7 +88,6 @@ func (c IrcClient) Eventloop() {
 			if messages[n-1] != byte('\n') || messages[n-2] != byte('\r') {
         leftover = lines[len(lines)-1] // store last element as leftover (since it's not terminated by /r/n and might be followed up in next messages)
         lines = lines[:len(lines)-1] // removes last element
-        log.Println("Leftover:", string(leftover))
 			}
 			for _, line := range lines {
         log.Println(string(line))

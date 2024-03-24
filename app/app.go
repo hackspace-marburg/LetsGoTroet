@@ -1,8 +1,9 @@
 package app
 
 import (
-  "log"
-  "sync"
+	"log"
+	"strings"
+	"sync"
 )
 
 type MessageHandler func(source string, message string, messageID string)
@@ -31,8 +32,15 @@ func New(irc Adapter, mastodon Adapter) App {
 }
 
 func (app App) handleIRCMessage(source string, message string, messageID string) {
-  log.Println("Service got message:", message, "by:", source, "with id:", messageID)
-  err := app.ircAdapter.Reply(messageID, "I'm sorry %s I'm afraid I cannot do that")
+  var err error
+  switch {
+  case strings.HasPrefix(message, ".t "):
+    // TODO: send toot now!
+    log.Println("We should be tooting now...")
+  case strings.HasPrefix(message, ".?"):
+     err = app.ircAdapter.Reply(messageID, "I'm sorry %s I'm afraid I can't do that")
+  }
+
   if err != nil {
     log.Println("Error when replying:", err)
   }
