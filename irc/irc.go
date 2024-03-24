@@ -5,14 +5,27 @@ import (
 	"bytes"
 	"crypto/tls"
 	"database/sql"
+	"errors"
 	"log"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
+  "fmt"
 )
 
 const MSG_BUF_LEN = 10
 const IRC_USER_REGEX = `[a-zA-Z0-9-_\[\]\{\}\\\|` + "`" + `]{2,9}`
+const create_table = `
+  CREATE TABLE IF NOT EXISTS messages_irc(
+    id INTEGER NOT NULL PRIMARY KEY,
+    time DATETIME NOT NULL,
+    channel TEXT NOT NULL,
+    user TEXT NOT NULL,
+    message TEXT NOT NULL
+  );
+`
+
 
 type IrcClient struct {
 	connection *tls.Conn
@@ -35,7 +48,10 @@ type Handler struct {
 func (c IrcClient) Eventloop() {
 	buffer := make([]byte, 2000)
 	active := true
+  var leftover []byte 
+  leftover = nil
 
+  log.Println("IRC Adapter Loop started")
 	timeoffset, _ := time.ParseDuration("1s")
 	for active {
 		c.connection.SetReadDeadline(time.Now().Add(timeoffset))
@@ -62,11 +78,20 @@ func (c IrcClient) Eventloop() {
 				}
 			}
 		} else {
-			if buffer[n-1] != byte('\n') {
-				log.Println("WARNING: Latest READ did not end with a finished message") // TODO
+      messages := buffer
+      // This handling of split messages DETECTS the split but there seem to be problems with reassembling
+      if leftover != nil {
+        messages = append(leftover, messages...)
+        leftover = nil
+      }
+			lines := bytes.Split(messages[:n-1], []byte("\r\n"))
+			if messages[n-1] != byte('\n') || messages[n-2] != byte('\r') {
+        leftover = lines[len(lines)-1] // store last element as leftover (since it's not terminated by /r/n and might be followed up in next messages)
+        lines = lines[:len(lines)-1] // removes last element
+        log.Println("Leftover:", string(leftover))
 			}
-			lines := bytes.Split(buffer[:n-1], []byte("\r\n"))
 			for _, line := range lines {
+        log.Println(string(line))
 				strline := string(line)
 				for _, handler := range c.handlers {
 					if handler.condition.MatchString(strline) {
@@ -83,26 +108,58 @@ func (c IrcClient) Eventloop() {
 // The IrcClient's Send function converts a message to a new PRIVMSG command
 // to the channel configured during creation of the IrcClient (see irc.New).
 // This command is not sent directly but appended to an outgoing messages queue handeled in IrcClient.Eventloop().
-// Consequently it will always return nil as error, since these would not occur here.
-// Since this is IRC the worst thing happening could be the socket/connection breaking which kills the bot anyway.
+// Consequently it will always return nil, since we cannot track errors here.
 func (c IrcClient) Send(content string) error {
 	c.outgoing <- "PRIVMSG #" + c.channel + " :" + content
 	return nil
 }
 
+// Replies to a message given by messageid
+// If the given content contains a " %s " it will be treated as a format string and the person to whom is replied is sprintf'd into there
+// Otherwise the reply message with start with the name of the originator
+// MessageIDs not found in the Database will return an error containing the id as text
 func (c IrcClient) Reply(messageid string, content string) error {
 	// get message/user from DB
 	// if not found return a not-found error
 	// else return c.Send(user + ": " + content)
 	// Just a dummy r.n. to comply to app.Handler
-	return nil
+  id, err := strconv.Atoi(messageid)
+  if err != nil {
+    return err
+  }
+  row := c.db.QueryRow("SELECT user FROM messages_irc WHERE id=?", id)
+  var sender string // irc user names are never longer than 9 characters
+  if err := row.Scan(&sender); err != nil {
+    if errors.Is(err, sql.ErrNoRows){
+      return errors.New(fmt.Sprint("Message not found in IRC Message database:", id))
+    } else {
+      return err
+    }
+  }
+  if strings.Contains(content, " %s "){
+    return c.Send(fmt.Sprintf(content, sender))
+  }
+  return c.Send(fmt.Sprint(sender, ": ", content))
 }
 
-func (c IrcClient) RegisterMessageHandler(handler app.MessageHandler) {
-	c.chan_msg = handler
+func (c *IrcClient) RegisterMessageHandler(handler app.MessageHandler) {
+  log.Println("IRC -> RegisterMessageHandler")
+  c.chan_msg = handler
 }
 
-// Creates a new IrcClient. Needs a server adress (like hostname or ip, anything a net.Dial would understand),
+func (c IrcClient) storeMessage(user string, message string) (string, error) {
+  var id int64
+  res, err := c.db.Exec("INSERT INTO messages_irc VALUES(NULL,?,?,?,?);", time.Now(), c.channel, user, message)
+  if err != nil {
+    return "", err
+  }
+  if id, err = res.LastInsertId(); err != nil {
+    return "", err
+  }
+  return strconv.FormatInt(id, 10), nil
+}
+
+// Creates a new IrcClient. Needs a server adress (anything a net.Dial() would understand),
 // a username to use as nick and a channel to join upon connection.
 // This function also sets up all internal message handlers (not application specific, but IRC-protool specific).
 // Most actions perfomed are done via these handlers, i.e. join channel, irc PING/PONG, monitoring for channel OPs.
@@ -110,6 +167,10 @@ func (c IrcClient) RegisterMessageHandler(handler app.MessageHandler) {
 // Otherwise the IRC client would need to create app.Adapter like structs for each channel. (Which it doesn't and I don't want to scope creep)
 // TODO: handle NickServ login
 func New(adress string, username string, channel string, db *sql.DB) (*IrcClient, error) {
+
+  if _, err := db.Exec(create_table); err != nil {
+    return nil, err
+  }
 
 	config := &tls.Config{}
 	irccon, err := tls.Dial("tcp", "irc.hackint.org:6697", config)
@@ -180,16 +241,19 @@ func New(adress string, username string, channel string, db *sql.DB) (*IrcClient
 		handler: func(s []string, ic *IrcClient) {
 			user := s[1]
 			channel := s[2]
-			message := s[3]
+			message := s[3][:len(s[3])-1]
 			operator, ok := ic.operators[channel][user]
 			if !ok {
 				operator = false
 			}
-			log.Println("Message by:", user, "in:", channel, "is Op?:", operator, "Content:", message)
 			if operator && channel == ic.channel && user != ic.nick && ic.chan_msg != nil {
 				log.Println("Handing off handling of Message:", user, ":", message)
-				// TODO: put message in database and give ID to handler
-				ic.chan_msg(user, message, "MessageID-Placeholder-lol")
+        if id, err := ic.storeMessage(user, message);err != nil {
+          log.Println("ERROR while trying to store IRC message:", err)
+          log.Println("Due to the Error above this message will not be handeled")
+        } else {
+				  ic.chan_msg(user, message, id)
+        }
 			}
 		},
 	},

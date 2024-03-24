@@ -2,34 +2,37 @@ package main
 
 import (
 	"LetsGoTroet/irc"
+  "LetsGoTroet/app"
 	"log"
-	"sync"
   "database/sql"
   _ "github.com/mattn/go-sqlite3"
 )
 
 const CHANNEL = "#troet"
+const NICK = "Troet2"
+const SQLITE_FILENAME = "messages.db"
 
 func main() {
-	var wg sync.WaitGroup
-
-  db := setupDB()
-	bot, err := irc.New("irc.hackint.org:6697", "Troet2", "#Troet", db)
   
+  db := setupDB(SQLITE_FILENAME)
+	// Setup  IRC adapter
+  bot, err := irc.New("irc.hackint.org:6697", NICK, CHANNEL, db)
 	if err != nil {
-		log.Println(err)
+    log.Println("IRC Adapter creation failed:", err)
 		return
 	}
+  // TODO: Setup Mastodon adapter
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		bot.Eventloop()
-	}()
 
-	wg.Wait()
+  // Run service
+  service := app.New(bot, nil)
+  service.Run()
 }
 
-func setupDB() *sql.DB{
-  return nil
+func setupDB(filename string) *sql.DB{
+  db, err := sql.Open("sqlite3", filename)
+  if err != nil {
+    log.Fatal("Could not open database, Error:", err)
+  }
+  return db
 }
