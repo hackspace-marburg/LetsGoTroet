@@ -6,12 +6,12 @@ import (
 	"crypto/tls"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
-  "fmt"
 )
 
 const MSG_BUF_LEN = 10
@@ -25,7 +25,6 @@ const create_table = `
     message TEXT NOT NULL
   );
 `
-
 
 type IrcClient struct {
 	connection *tls.Conn
@@ -48,10 +47,10 @@ type Handler struct {
 func (c IrcClient) Eventloop() {
 	buffer := make([]byte, 2000)
 	active := true
-  var leftover []byte 
-  leftover = nil
+	var leftover []byte
+	leftover = nil
 
-  log.Println("IRC Adapter Loop started")
+	log.Println("IRC Adapter Loop started")
 	timeoffset, _ := time.ParseDuration("1s")
 	for active {
 		c.connection.SetReadDeadline(time.Now().Add(timeoffset))
@@ -78,19 +77,19 @@ func (c IrcClient) Eventloop() {
 				}
 			}
 		} else {
-      messages := buffer
-      // This handling of split messages DETECTS the split but there seem to be problems with reassembling
-      if leftover != nil {
-        messages = append(leftover, messages...)
-        leftover = nil
-      }
+			messages := buffer
+			// This handling of split messages DETECTS the split but there seem to be problems with reassembling
+			if leftover != nil {
+				messages = append(leftover, messages...)
+				leftover = nil
+			}
 			lines := bytes.Split(messages[:n-1], []byte("\r\n"))
 			if messages[n-1] != byte('\n') || messages[n-2] != byte('\r') {
-        leftover = lines[len(lines)-1] // store last element as leftover (since it's not terminated by /r/n and might be followed up in next messages)
-        lines = lines[:len(lines)-1] // removes last element
+				leftover = lines[len(lines)-1] // store last element as leftover (since it's not terminated by /r/n and might be followed up in next messages)
+				lines = lines[:len(lines)-1]   // removes last element
 			}
 			for _, line := range lines {
-        log.Println(string(line))
+				log.Println(string(line))
 				strline := string(line)
 				for _, handler := range c.handlers {
 					if handler.condition.MatchString(strline) {
@@ -122,40 +121,40 @@ func (c IrcClient) Reply(messageid string, content string) error {
 	// if not found return a not-found error
 	// else return c.Send(user + ": " + content)
 	// Just a dummy r.n. to comply to app.Handler
-  id, err := strconv.Atoi(messageid)
-  if err != nil {
-    return err
-  }
-  row := c.db.QueryRow("SELECT user FROM messages_irc WHERE id=?", id)
-  var sender string // irc user names are never longer than 9 characters
-  if err := row.Scan(&sender); err != nil {
-    if errors.Is(err, sql.ErrNoRows){
-      return errors.New(fmt.Sprint("Message not found in IRC Message database:", id))
-    } else {
-      return err
-    }
-  }
-  if strings.Contains(content, " %s "){
-    return c.Send(fmt.Sprintf(content, sender))
-  }
-  return c.Send(fmt.Sprint(sender, ": ", content))
+	id, err := strconv.Atoi(messageid)
+	if err != nil {
+		return err
+	}
+	row := c.db.QueryRow("SELECT user FROM messages_irc WHERE id=?", id)
+	var sender string // irc user names are never longer than 9 characters
+	if err := row.Scan(&sender); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New(fmt.Sprint("Message not found in IRC Message database:", id))
+		} else {
+			return err
+		}
+	}
+	if strings.Contains(content, " %s ") {
+		return c.Send(fmt.Sprintf(content, sender))
+	}
+	return c.Send(fmt.Sprint(sender, ": ", content))
 }
 
 func (c *IrcClient) RegisterMessageHandler(handler app.MessageHandler) {
-  log.Println("IRC -> RegisterMessageHandler")
-  c.chan_msg = handler
+	log.Println("IRC -> RegisterMessageHandler")
+	c.chan_msg = handler
 }
 
 func (c IrcClient) storeMessage(user string, message string) (string, error) {
-  var id int64
-  res, err := c.db.Exec("INSERT INTO messages_irc VALUES(NULL,?,?,?,?);", time.Now(), c.channel, user, message)
-  if err != nil {
-    return "", err
-  }
-  if id, err = res.LastInsertId(); err != nil {
-    return "", err
-  }
-  return strconv.FormatInt(id, 10), nil
+	var id int64
+	res, err := c.db.Exec("INSERT INTO messages_irc VALUES(NULL,?,?,?,?);", time.Now(), c.channel, user, message)
+	if err != nil {
+		return "", err
+	}
+	if id, err = res.LastInsertId(); err != nil {
+		return "", err
+	}
+	return strconv.FormatInt(id, 10), nil
 }
 
 // Creates a new IrcClient. Needs a server adress (anything a net.Dial() would understand),
@@ -167,9 +166,9 @@ func (c IrcClient) storeMessage(user string, message string) (string, error) {
 // TODO: handle NickServ login
 func New(adress string, username string, channel string, db *sql.DB) (*IrcClient, error) {
 
-  if _, err := db.Exec(create_table); err != nil {
-    return nil, err
-  }
+	if _, err := db.Exec(create_table); err != nil {
+		return nil, err
+	}
 
 	config := &tls.Config{}
 	irccon, err := tls.Dial("tcp", "irc.hackint.org:6697", config)
@@ -177,10 +176,10 @@ func New(adress string, username string, channel string, db *sql.DB) (*IrcClient
 		log.Println(err)
 		return nil, err
 	}
-  if strings.HasPrefix(channel, "#") {
-    channel = channel[1:]
-  }
-  channel = strings.ToLower(channel)
+	if strings.HasPrefix(channel, "#") {
+		channel = channel[1:]
+	}
+	channel = strings.ToLower(channel)
 
 	outbound := make(chan string, MSG_BUF_LEN)
 	outbound <- "NICK " + username
@@ -247,12 +246,12 @@ func New(adress string, username string, channel string, db *sql.DB) (*IrcClient
 			}
 			if operator && channel == ic.channel && user != ic.nick && ic.chan_msg != nil {
 				log.Println("Handing off handling of Message:", user, ":", message)
-        if id, err := ic.storeMessage(user, message);err != nil {
-          log.Println("ERROR while trying to store IRC message:", err)
-          log.Println("Due to the Error above this message will not be handeled")
-        } else {
-				  ic.chan_msg(user, message, id)
-        }
+				if id, err := ic.storeMessage(user, message); err != nil {
+					log.Println("ERROR while trying to store IRC message:", err)
+					log.Println("Due to the Error above this message will not be handeled")
+				} else {
+					ic.chan_msg(user, message, id)
+				}
 			}
 		},
 	},
@@ -265,7 +264,7 @@ func New(adress string, username string, channel string, db *sql.DB) (*IrcClient
 		channel:    channel,
 		handlers:   handlers,
 		operators:  make(map[string]map[string]bool),
-    db:         db,
-    chan_msg:   nil,
+		db:         db,
+		chan_msg:   nil,
 	}, nil
 }
