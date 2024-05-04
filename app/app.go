@@ -9,8 +9,9 @@ import (
 type MessageHandler func(source string, message string, messageID string)
 
 type Adapter interface {
-  Send(message string) error
+  Send(message string) (string, error)
   Reply(messageID string, message string) error
+  Delete(messageID string) error
   RegisterMessageHandler(MessageHandler)
   Eventloop()
 }

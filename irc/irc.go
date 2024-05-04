@@ -107,9 +107,16 @@ func (c IrcClient) Eventloop() {
 // to the channel configured during creation of the IrcClient (see irc.New).
 // This command is not sent directly but appended to an outgoing messages queue handeled in IrcClient.Eventloop().
 // Consequently it will always return nil, since we cannot track errors here.
-func (c IrcClient) Send(content string) error {
+func (c IrcClient) Send(content string) (string, error) {
 	c.outgoing <- "PRIVMSG #" + c.channel + " :" + content
-	return nil
+  c.storeMessage(c.nick, content)
+	return content, nil
+}
+
+// Deletion of already sent Messages is not supported for IRC
+// This will always error
+func (c IrcClient) Delete(messageID string) error{
+  return fmt.Errorf("Request to delete IRC Message %s failed: Not supported", messageID)
 }
 
 // Replies to a message given by messageid
@@ -135,9 +142,11 @@ func (c IrcClient) Reply(messageid string, content string) error {
 		}
 	}
 	if strings.Contains(content, " %s ") {
-		return c.Send(fmt.Sprintf(content, sender))
+		_, err = c.Send(fmt.Sprintf(content, sender))
+    return err
 	}
-	return c.Send(fmt.Sprint(sender, ": ", content))
+  _, err = c.Send(fmt.Sprint(sender, ": ", content))
+  return err
 }
 
 func (c *IrcClient) RegisterMessageHandler(handler app.MessageHandler) {
@@ -149,10 +158,10 @@ func (c IrcClient) storeMessage(user string, message string) (string, error) {
 	var id int64
 	res, err := c.db.Exec("INSERT INTO messages_irc VALUES(NULL,?,?,?,?);", time.Now(), c.channel, user, message)
 	if err != nil {
-		return "", err
+    return "", fmt.Errorf("Error during inserting message in database: %s", err)
 	}
 	if id, err = res.LastInsertId(); err != nil {
-		return "", err
+    return "", fmt.Errorf("Error getting Id of latest databse insert: %s", err)
 	}
 	return strconv.FormatInt(id, 10), nil
 }

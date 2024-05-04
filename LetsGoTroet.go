@@ -45,8 +45,7 @@ func main() {
 	}
 	// Run service
 	service := app.New(bot, mst)
-	_ = service
-	//service.Run()
+	service.Run()
 }
 
 func setupDB(filename string) *sql.DB {
