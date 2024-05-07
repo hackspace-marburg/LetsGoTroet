@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"regexp"
 	"strconv"
@@ -45,7 +46,6 @@ type Handler struct {
 }
 
 func (c IrcClient) Eventloop() {
-	buffer := make([]byte, 2000)
 	active := true
 	var leftover []byte
 	leftover = nil
@@ -54,14 +54,18 @@ func (c IrcClient) Eventloop() {
 	timeoffset, _ := time.ParseDuration("1s")
 	for active {
 		c.connection.SetReadDeadline(time.Now().Add(timeoffset))
-		n, err := c.connection.Read(buffer)
-		if err != nil {
-			// this error is most likely occuring since we did not get new messages within the set Deadline
-			// so for now i go full YOLO by SENDING messages now instead
-			//
-			// TODO: check what kind of error this is.
-			// a read time out essentially means we're good to go.
-			// But a closed connection would mean we should do something different
+		// this could, in theory, be exploited by a malicuous IRC server
+		// but this depends on the connection being able to deliver several gigabytes in one Read()
+		buffer, err := io.ReadAll(c.connection)
+		if len(buffer) == 0 {
+			if !strings.Contains(err.Error(), "i/o timeout") {
+				// we assume that when we did not get anything this is due to no messages being sent to us within the timeout
+				// if the error message is NOT a timeout this should be handeled somehow
+				log.Println("Unusual Error on recieving IRC Messages:", err)
+				// TODO: Change Return Type to return Error and return this.
+				// Potentially: somewhere the connection needs to be closed so the adapter can be reinitialized
+			}
+
 			continue_sending := true
 			for continue_sending {
 				select {
@@ -78,13 +82,12 @@ func (c IrcClient) Eventloop() {
 			}
 		} else {
 			messages := buffer
-			// This handling of split messages DETECTS the split but there seem to be problems with reassembling
 			if leftover != nil {
 				messages = append(leftover, messages...)
 				leftover = nil
 			}
-			lines := bytes.Split(messages[:n-1], []byte("\r\n"))
-			if messages[n-1] != byte('\n') || messages[n-2] != byte('\r') {
+			lines := bytes.Split(messages, []byte("\r\n"))
+			if messages[len(messages)-1] != byte('\n') || messages[len(messages)-2] != byte('\r') {
 				leftover = lines[len(lines)-1] // store last element as leftover (since it's not terminated by /r/n and might be followed up in next messages)
 				lines = lines[:len(lines)-1]   // removes last element
 			}
@@ -96,7 +99,6 @@ func (c IrcClient) Eventloop() {
 						go handler.handler(handler.condition.FindStringSubmatch(strline), &c)
 					}
 				}
-				// log.Println(string(line))
 			}
 		}
 	}
@@ -109,14 +111,14 @@ func (c IrcClient) Eventloop() {
 // Consequently it will always return nil, since we cannot track errors here.
 func (c IrcClient) Send(content string) (string, error) {
 	c.outgoing <- "PRIVMSG #" + c.channel + " :" + content
-  c.storeMessage(c.nick, content)
+	c.storeMessage(c.nick, content)
 	return content, nil
 }
 
 // Deletion of already sent Messages is not supported for IRC
 // This will always error
-func (c IrcClient) Delete(messageID string) error{
-  return fmt.Errorf("Request to delete IRC Message %s failed: Not supported", messageID)
+func (c IrcClient) Delete(messageID string) error {
+	return fmt.Errorf("Request to delete IRC Message %s failed: Not supported", messageID)
 }
 
 // Replies to a message given by messageid
@@ -143,10 +145,10 @@ func (c IrcClient) Reply(messageid string, content string) error {
 	}
 	if strings.Contains(content, " %s ") {
 		_, err = c.Send(fmt.Sprintf(content, sender))
-    return err
+		return err
 	}
-  _, err = c.Send(fmt.Sprint(sender, ": ", content))
-  return err
+	_, err = c.Send(fmt.Sprint(sender, ": ", content))
+	return err
 }
 
 func (c *IrcClient) RegisterMessageHandler(handler app.MessageHandler) {
@@ -158,10 +160,10 @@ func (c IrcClient) storeMessage(user string, message string) (string, error) {
 	var id int64
 	res, err := c.db.Exec("INSERT INTO messages_irc VALUES(NULL,?,?,?,?);", time.Now(), c.channel, user, message)
 	if err != nil {
-    return "", fmt.Errorf("Error during inserting message in database: %s", err)
+		return "", fmt.Errorf("Error during inserting message in database: %s", err)
 	}
 	if id, err = res.LastInsertId(); err != nil {
-    return "", fmt.Errorf("Error getting Id of latest databse insert: %s", err)
+		return "", fmt.Errorf("Error getting Id of latest databse insert: %s", err)
 	}
 	return strconv.FormatInt(id, 10), nil
 }
@@ -172,7 +174,6 @@ func (c IrcClient) storeMessage(user string, message string) (string, error) {
 // Most actions perfomed are done via these handlers, i.e. join channel, irc PING/PONG, monitoring for channel OPs.
 // Currently the bot will only react to messages in the configured channel.
 // Otherwise the IRC client would need to create app.Adapter like structs for each channel. (Which it doesn't and I don't want to scope creep)
-// TODO: handle NickServ login
 func New(adress string, username string, channel string, db *sql.DB) (*IrcClient, error) {
 
 	if _, err := db.Exec(create_table); err != nil {
@@ -193,78 +194,6 @@ func New(adress string, username string, channel string, db *sql.DB) (*IrcClient
 	outbound := make(chan string, MSG_BUF_LEN)
 	outbound <- "NICK " + username
 	outbound <- "USER " + username + " * * :LetsGoTroet Bot"
-
-	var handlers []Handler
-	handlers = append(handlers, Handler{
-		condition: *regexp.MustCompile(`PING (\S+)`),
-		handler: func(s []string, ic *IrcClient) {
-			name := s[1]
-			ic.outgoing <- "PONG " + name
-		},
-	}, Handler{
-		// Join channel after MOTD
-		condition: *regexp.MustCompile(":[a-z.0-9]+ 376 " + username + " :End of /MOTD command."),
-		handler: func(s []string, ic *IrcClient) {
-			// Join channel
-			ic.outgoing <- "JOIN #" + ic.channel
-		},
-	}, Handler{
-		// Handle NAMES result (provided on channel join as well)
-		condition: *regexp.MustCompile(`:[a-z.0-9]+ 353 \S+ = #(\S+) :(.+)$`),
-		handler: func(s []string, ic *IrcClient) {
-			channel := s[1]
-			names := strings.Split(s[2], " ")
-			for _, name := range names {
-				if strings.HasPrefix(name, "@") {
-					// if someone is an operator, save them in the Operators map
-					cu, ok := ic.operators[channel]
-					if !ok {
-						cu = make(map[string]bool)
-						ic.operators[channel] = cu
-					}
-					cu[name[1:]] = true
-					log.Println("Found OP:", name, "in Channel", channel)
-				}
-			}
-		},
-	}, Handler{
-		// Listen to MODE messages promoting/demoting operators
-		condition: *regexp.MustCompile(`:\S+ MODE #(\S+) ([+-])o (` + IRC_USER_REGEX + `)`),
-		handler: func(s []string, ic *IrcClient) {
-			channel := s[1]
-			change := s[2]
-			user := s[3]
-			channelops, ok := ic.operators[channel]
-			if !ok {
-				log.Println("WARNING: During handling of MODE a new channel in operator list was created. This should not happen and might loose knowledge about existing ops")
-				channelops = make(map[string]bool)
-				ic.operators[channel] = channelops
-			}
-			channelops[user] = (change == "+")
-		},
-	}, Handler{
-		// Handle PRIVMSG
-		condition: *regexp.MustCompile(`:(` + IRC_USER_REGEX + `)!\S+ PRIVMSG #(\S+) :(.+)$`),
-		handler: func(s []string, ic *IrcClient) {
-			user := s[1]
-			channel := s[2]
-			message := s[3][:len(s[3])-1]
-			operator, ok := ic.operators[channel][user]
-			if !ok {
-				operator = false
-			}
-			if operator && channel == ic.channel && user != ic.nick && ic.chan_msg != nil {
-				log.Println("Handing off handling of Message:", user, ":", message)
-				if id, err := ic.storeMessage(user, message); err != nil {
-					log.Println("ERROR while trying to store IRC message:", err)
-					log.Println("Due to the Error above this message will not be handeled")
-				} else {
-					ic.chan_msg(user, message, id)
-				}
-			}
-		},
-	},
-	)
 
 	return &IrcClient{
 		connection: irccon,

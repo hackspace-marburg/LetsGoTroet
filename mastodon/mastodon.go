@@ -24,33 +24,33 @@ func (mc MastodonClient) Send(message string) (string, error) {
 		"status":     {message},
 		"visibility": {"private"},
 	}
-  req, err := mc.authorizedRequest(body)
-  if err != nil {
-    return "", fmt.Errorf("Error during building request: %s", err)
-  }
-  resp, err := mc.client.Do(req)
-  if err != nil {
-    return "", fmt.Errorf("Error during executing request: %s", err)
-  }
-  respBody, err := io.ReadAll(resp.Body)
-  if err != nil {
-    return "", fmt.Errorf("Error reading HTTP response: %s", err)
-  }
-  var posted status
-  if err = json.Unmarshal(respBody, &posted); err != nil {
-    return "", fmt. Errorf("Error unmarshaling response %s , %s", string(respBody), err)
-  }
-  
-  // TODO: return own internal ID related to databse entry here.
-  return posted.Id, nil
+	req, err := mc.authorizedRequest(body)
+	if err != nil {
+		return "", fmt.Errorf("Error during building request: %s", err)
+	}
+	resp, err := mc.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("Error during executing request: %s", err)
+	}
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("Error reading HTTP response: %s", err)
+	}
+	var posted status
+	if err = json.Unmarshal(respBody, &posted); err != nil {
+		return "", fmt.Errorf("Error unmarshaling response %s , %s", string(respBody), err)
+	}
+
+	// TODO: return own internal ID related to databse entry here.
+	return posted.Id, nil
 }
 
 func (mc MastodonClient) Reply(messageID string, message string) error {
 	return nil
 }
 
-func (mc MastodonClient) Delete(messageID string) error{
-  return nil
+func (mc MastodonClient) Delete(messageID string) error {
+	return nil
 }
 
 func (mc MastodonClient) RegisterMessageHandler(handler app.MessageHandler) {
