@@ -125,30 +125,31 @@ func (c IrcClient) Delete(messageID string) error {
 // If the given content contains a " %s " it will be treated as a format string and the person to whom is replied is sprintf'd into there
 // Otherwise the reply message with start with the name of the originator
 // MessageIDs not found in the Database will return an error containing the id as text
-func (c IrcClient) Reply(messageid string, content string) error {
+func (c IrcClient) Reply(messageid string, content string) (string, error) {
 	// get message/user from DB
 	// if not found return a not-found error
 	// else return c.Send(user + ": " + content)
 	// Just a dummy r.n. to comply to app.Handler
 	id, err := strconv.Atoi(messageid)
 	if err != nil {
-		return err
+		return "", err
 	}
 	row := c.db.QueryRow("SELECT user FROM messages_irc WHERE id=?", id)
 	var sender string // irc user names are never longer than 9 characters
 	if err := row.Scan(&sender); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return errors.New(fmt.Sprint("Message not found in IRC Message database:", id))
+			return "", fmt.Errorf("Message not found in IRC Message database: %s", messageid)
 		} else {
-			return err
+			return "", err
 		}
 	}
+  var toSend string
 	if strings.Contains(content, " %s ") {
-		_, err = c.Send(fmt.Sprintf(content, sender))
-		return err
-	}
-	_, err = c.Send(fmt.Sprint(sender, ": ", content))
-	return err
+		toSend = fmt.Sprintf(content, sender)
+	} else {
+    toSend = fmt.Sprint(sender, ": ", content)
+  }
+	return c.Send(toSend)
 }
 
 func (c *IrcClient) RegisterMessageHandler(handler app.MessageHandler) {

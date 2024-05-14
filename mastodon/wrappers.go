@@ -3,8 +3,6 @@ package mastodon
 import (
 	"fmt"
 	"net/http"
-	"net/url"
-	"strings"
 )
 
 type appsReply struct {
@@ -31,6 +29,7 @@ type status struct {
 	Url         string            `json:"url"`
 	Account     account           `json:"account"`
 	Attachments []mediaattachment `json:"media_attachments"`
+  ResponseTo  string            `json:"in_reply_to_id"`
 }
 
 type account struct {
@@ -46,12 +45,8 @@ type mediaattachment struct {
 	Url  string `json:"url"`
 }
 
-func (mc MastodonClient) authorizedRequest(body url.Values) (*http.Request, error) {
-	request, err := http.NewRequest("POST", fmt.Sprintf(`https://%s/api/v1/statuses`, mc.homeserver), strings.NewReader(body.Encode()))
-	if err != nil {
-		return nil, err
-	}
+func (mc MastodonClient) authorizedRequest(request *http.Request) *http.Request {
 	request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", mc.token))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	return request, nil
+	return request
 }
