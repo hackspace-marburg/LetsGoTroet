@@ -110,15 +110,17 @@ func (c IrcClient) Eventloop() {
 // This command is not sent directly but appended to an outgoing messages queue handeled in IrcClient.Eventloop().
 // Consequently it will always return nil, since we cannot track errors here.
 func (c IrcClient) Send(content string) (string, error) {
-	c.outgoing <- "PRIVMSG #" + c.channel + " :" + content
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		c.outgoing <- "PRIVMSG #" + c.channel + " :" + line
+	}
 	c.storeMessage(c.nick, content)
 	return content, nil
 }
 
-// Deletion of already sent Messages is not supported for IRC
-// This will always error
-func (c IrcClient) Delete(messageID string) error {
-	return fmt.Errorf("Request to delete IRC Message %s failed: Not supported", messageID)
+func (c IrcClient) GetMessage(messageID string) (string, error) {
+	//TODO
+	return "", nil
 }
 
 // Replies to a message given by messageid
@@ -143,12 +145,12 @@ func (c IrcClient) Reply(messageid string, content string) (string, error) {
 			return "", err
 		}
 	}
-  var toSend string
+	var toSend string
 	if strings.Contains(content, " %s ") {
 		toSend = fmt.Sprintf(content, sender)
 	} else {
-    toSend = fmt.Sprint(sender, ": ", content)
-  }
+		toSend = fmt.Sprint(sender, ": ", content)
+	}
 	return c.Send(toSend)
 }
 
@@ -161,10 +163,10 @@ func (c IrcClient) storeMessage(user string, message string) (string, error) {
 	var id int64
 	res, err := c.db.Exec("INSERT INTO messages_irc VALUES(NULL,?,?,?,?);", time.Now(), c.channel, user, message)
 	if err != nil {
-		return "", fmt.Errorf("Error during inserting message in database: %s", err)
+		return "", fmt.Errorf("Error during inserting message in database: %w", err)
 	}
 	if id, err = res.LastInsertId(); err != nil {
-		return "", fmt.Errorf("Error getting Id of latest databse insert: %s", err)
+		return "", fmt.Errorf("Error getting Id of latest databse insert: %w", err)
 	}
 	return strconv.FormatInt(id, 10), nil
 }
