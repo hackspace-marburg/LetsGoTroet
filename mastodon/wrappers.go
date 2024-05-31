@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -150,7 +151,10 @@ func (mc MastodonClient) getStatus(tootId string) (*status, error) {
 }
 
 func (mc MastodonClient) search(content string) (*search, error) {
-	request, err := http.NewRequest("GET", fmt.Sprintf(`https://%s/api/v2/search?q=%s`, mc.homeserver, content), strings.NewReader(""))
+  encoded_content := url.QueryEscape(content)
+  url := fmt.Sprintf(`https://%s/api/v2/search?q=%s&resolve=true`, mc.homeserver, encoded_content)
+  log.Println(url)
+  request, err := http.NewRequest("GET", url, strings.NewReader(""))
 	if err != nil {
 		return nil, fmt.Errorf("Error building request for search: %w", err)
 	}
@@ -159,7 +163,7 @@ func (mc MastodonClient) search(content string) (*search, error) {
 		return nil, fmt.Errorf("Error during search request: %w", err)
 	}
 	var searchResult search
-	if err = json.Unmarshal(respBody, searchResult); err != nil {
+	if err = json.Unmarshal(respBody, &searchResult); err != nil {
 		return nil, fmt.Errorf("Error unmarshaling search response: %w", err)
 	}
 	return &searchResult, nil

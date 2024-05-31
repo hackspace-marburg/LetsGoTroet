@@ -85,11 +85,10 @@ func (app App) handleIRCMessage(source string, message string, messageID string)
 	case strings.HasPrefix(message, ".s "):
 		// search & load toot
 		content := strings.TrimPrefix(message, ".s ")
-		tootID, err := app.mastodonAdapter.Search(content)
-		if err != nil {
-			if tootID != "" {
-				tootmessage, _ := app.ircAdapter.GetMessage(tootID)
-				app.ircAdapter.Send(tootmessage)
+		tootMessage, err := app.mastodonAdapter.Search(content)
+		if err == nil {
+			if tootMessage != "" {
+				app.ircAdapter.Send(tootMessage)
 			} else {
 				app.ircAdapter.Send(fmt.Sprintf("No toot found"))
 			}

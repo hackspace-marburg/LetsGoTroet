@@ -1,7 +1,8 @@
 package mastodon
 
 import (
-	"LetsGoTroet/app"
+	"github.com/microcosm-cc/bluemonday"
+  "LetsGoTroet/app"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -58,18 +59,18 @@ func (mc MastodonClient) Reply(shorthand string, message string) (string, error)
 	return mc.postStatus(body)
 }
 
-func (mc MastodonClient) lookupShorthand(shorthand string) (*status, error) {
-	row := mc.database.QueryRow("SELECT tootid FROM messages_mastodon WHERE shorthand=?;", shorthand)
+func (mc MastodonClient) lookupShorthand(messageID string) (*status, error) {
+	row := mc.database.QueryRow("SELECT tootid FROM messages_mastodon WHERE shorthand=?;", messageID)
 	var tootId string
 	err := row.Scan(&tootId)
   if err != nil || tootId == "" {
-      return nil, fmt.Errorf("Toot not found in database: %s", shorthand)
+      return nil, fmt.Errorf("Toot not found in database: %s", messageID)
 	}
 	toot, err := mc.getStatus(tootId)
 	if err != nil && err.Error() == "404" {
 		// If this happens the toot is not (most likely: no longer) existing
 		// subsequently we can delete our entry about it
-		mc.database.Query("DELETE FROM messages_mastodon WHERE shorthand=?;", shorthand)
+		mc.database.Query("DELETE FROM messages_mastodon WHERE shorthand=?;", messageID)
 		return nil, fmt.Errorf("Toot not found (404)")
 	}
 	return toot, err
@@ -80,9 +81,13 @@ func (mc MastodonClient) GetMessage(messageID string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("Error retrieving Toot: %w", err)
 	}
-	indentedContent := "> " + strings.Join(strings.Split(toot.Content, "\n"), "\n> ")
+  // TODO: replace <br/> with \n or something to handle multiline messages
+  p := bluemonday.NewPolicy()
+  plainContent := p.Sanitize(toot.Content)
+  indentedContent := "> " + strings.Join(strings.Split(plainContent, "\n"), "\n> ")
 	output := fmt.Sprintf("[%s] Toot by: %s\n%s\n%s", messageID, toot.Account.DisplayName, indentedContent, toot.Url)
 
+  log.Println("Get Message output:", output)
 	return output, err
 }
 
@@ -157,6 +162,9 @@ func (mc MastodonClient) RegisterMessageHandler(handler app.MessageHandler) {
 func (mc MastodonClient) Eventloop() {
 	// TODO
 	// Check if Auth Token is still valid. If not, login again!
+  
+  // TODO
+  // Check for new Notifications and Pawn them off to mc.MessageHandler
 }
 
 func (mc MastodonClient) storeMessage(message status) (string, error) {
