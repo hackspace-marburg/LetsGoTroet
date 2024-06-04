@@ -39,6 +39,14 @@ type status struct {
 	Favorited   bool              `json:"favourited"`
 }
 
+type notification struct {
+	Id        string  `json:"id"`
+	Type      string  `json:"type"`
+	CreatedAt string  `json:"created_at"`
+	Account   account `json:"account"`
+	Status    status  `json:"status"`
+}
+
 type account struct {
 	Id          string `json:"id"`
 	Username    string `json:"username"`
@@ -150,11 +158,33 @@ func (mc MastodonClient) getStatus(tootId string) (*status, error) {
 	return &toot, nil
 }
 
+func (mc MastodonClient) getNotifications() (*[]notification, error) {
+	request, err := http.NewRequest("GET", fmt.Sprintf(`https://%s/api/v1/notifications?types[]=mention&types[]=status&types[]=reblog&types[]=favourite`, mc.homeserver), strings.NewReader(""))
+	respBody, err := mc.executeRequest(request)
+	if err != nil {
+		return nil, fmt.Errorf("Error during notification request: %w", err)
+	}
+	var notifications []notification
+	if err = json.Unmarshal(respBody, &notifications); err != nil {
+		return nil, fmt.Errorf("Error unmarshalling notification response %s , %w", string(respBody), err)
+	}
+	return &notifications, nil
+}
+
+func (mc MastodonClient) dismissNotification(event notification) error {
+	request, err := http.NewRequest("GET", fmt.Sprintf(`https://%s/api/v1/notifications/%s/dismiss`, mc.homeserver, event.Id), strings.NewReader(""))
+	_, err = mc.executeRequest(request)
+	if err != nil {
+		return fmt.Errorf("Error during dismiss notification request: %w", err)
+	}
+	return nil
+}
+
 func (mc MastodonClient) search(content string) (*search, error) {
-  encoded_content := url.QueryEscape(content)
-  url := fmt.Sprintf(`https://%s/api/v2/search?q=%s&resolve=true`, mc.homeserver, encoded_content)
-  log.Println(url)
-  request, err := http.NewRequest("GET", url, strings.NewReader(""))
+	encoded_content := url.QueryEscape(content)
+	url := fmt.Sprintf(`https://%s/api/v2/search?q=%s&resolve=true`, mc.homeserver, encoded_content)
+	log.Println(url)
+	request, err := http.NewRequest("GET", url, strings.NewReader(""))
 	if err != nil {
 		return nil, fmt.Errorf("Error building request for search: %w", err)
 	}

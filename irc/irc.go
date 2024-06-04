@@ -45,7 +45,7 @@ type Handler struct {
 	handler   handlerfn
 }
 
-func (c IrcClient) Eventloop() {
+func (c *IrcClient) Eventloop() {
 	active := true
 	var leftover []byte
 	leftover = nil
@@ -53,6 +53,29 @@ func (c IrcClient) Eventloop() {
 	log.Println("IRC Adapter Loop started")
 	timeoffset, _ := time.ParseDuration("1s")
 	for active {
+		// First catch a broken connection and reinitialize
+		if c.connection == nil {
+
+			config := &tls.Config{}
+			irccon, err := tls.Dial("tcp", "irc.hackint.org:6697", config)
+			if err != nil {
+				log.Println(err)
+				// Probably something horrible happened. Let's wait a bit
+        duration, _ :=time.ParseDuration("10s")
+        time.Sleep(duration)
+				continue
+			} else {
+        log.Println("IRC connection established")
+      }
+
+			outbound := make(chan string, MSG_BUF_LEN)
+			outbound <- "NICK " + c.nick
+			outbound <- "USER " + c.nick + " * * :LetsGoTroet Bot"
+
+      c.connection = irccon
+      c.outgoing = outbound
+		}
+
 		c.connection.SetReadDeadline(time.Now().Add(timeoffset))
 		// this could, in theory, be exploited by a malicuous IRC server
 		// but this depends on the connection being able to deliver several gigabytes in one Read()
@@ -62,22 +85,22 @@ func (c IrcClient) Eventloop() {
 				// we assume that when we did not get anything this is due to no messages being sent to us within the timeout
 				// if the error message is NOT a timeout this should be handeled somehow
 				log.Println("Unusual Error on recieving IRC Messages:", err)
-				// TODO: Change Return Type to return Error and return this.
-				// Potentially: somewhere the connection needs to be closed so the adapter can be reinitialized
+				log.Println("Turning off IRC client.")
+				c.connection = nil
+				continue // Don't do anything else, our client is broken
 			}
 
 			continue_sending := true
 			for continue_sending {
 				select {
 				case next_msg := <-c.outgoing:
-					log.Println("Sending:", next_msg)
+					//log.Println("Sending:", next_msg)
 					_, err := c.connection.Write(append([]byte(next_msg), []byte("\r\n")...))
 					if err != nil {
 						log.Println(err)
 					}
 				default:
 					continue_sending = false
-					time.Sleep(timeoffset)
 				}
 			}
 		} else {
@@ -92,11 +115,11 @@ func (c IrcClient) Eventloop() {
 				lines = lines[:len(lines)-1]   // removes last element
 			}
 			for _, line := range lines {
-				log.Println(string(line))
+				// log.Println(string(line)) // Enable for very verbose Debug logging
 				strline := string(line)
 				for _, handler := range c.handlers {
 					if handler.condition.MatchString(strline) {
-						go handler.handler(handler.condition.FindStringSubmatch(strline), &c)
+						go handler.handler(handler.condition.FindStringSubmatch(strline), c)
 					}
 				}
 			}
@@ -183,24 +206,14 @@ func New(adress string, username string, channel string, db *sql.DB) (*IrcClient
 		return nil, err
 	}
 
-	config := &tls.Config{}
-	irccon, err := tls.Dial("tcp", "irc.hackint.org:6697", config)
-	if err != nil {
-		log.Println(err)
-		return nil, err
-	}
 	if strings.HasPrefix(channel, "#") {
 		channel = channel[1:]
 	}
 	channel = strings.ToLower(channel)
 
-	outbound := make(chan string, MSG_BUF_LEN)
-	outbound <- "NICK " + username
-	outbound <- "USER " + username + " * * :LetsGoTroet Bot"
-
 	return &IrcClient{
-		connection: irccon,
-		outgoing:   outbound,
+		connection: nil,
+		outgoing:   nil,
 		nick:       username,
 		channel:    channel,
 		handlers:   handlers,

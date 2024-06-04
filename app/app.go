@@ -37,12 +37,12 @@ func New(irc Adapter, mastodon SocialAdapter) App {
 		mastodonAdapter: mastodon,
 	}
 	irc.RegisterMessageHandler(app.handleIRCMessage)
-	//mastodon.RegisterMessageHandler(app.handleMastodonMessage) // TODO einkkommentieren, wenn der masto-bot exisitiert.
+	mastodon.RegisterMessageHandler(app.handleMastodonMessage)
 
 	return app
 }
 
-func (app App) handleIRCMessage(source string, message string, messageID string) {
+func (app App) handleIRCMessage(msgtype string, message string, messageID string) {
 	var err error
 	switch {
 	case strings.HasPrefix(message, ".t "):
@@ -128,18 +128,47 @@ func (app App) handleIRCMessage(source string, message string, messageID string)
 	}
 }
 
-func (app App) handleMastodonMessage(source string, message string, messageID string) {
-
+func (app App) handleMastodonMessage(msgtype string, message string, messageID string) {
+	switch msgtype {
+	case "mention":
+		// We've been mentioned!
+		app.ircAdapter.Send("We've been mentioned!")
+		message, err := app.mastodonAdapter.GetMessage(messageID)
+		if err != nil {
+			app.ircAdapter.Send("But I failed to get the message")
+			app.ircAdapter.Send(err.Error())
+		} else {
+			app.ircAdapter.Send(message)
+		}
+	case "status":
+		message, err := app.mastodonAdapter.GetMessage(messageID)
+		if err != nil {
+			app.ircAdapter.Send("I failed to get the message %s") // TODO
+			app.ircAdapter.Send(err.Error())
+		} else {
+			app.ircAdapter.Send(message)
+		}
+	case "favourite":
+		app.ircAdapter.Send(fmt.Sprintf("%s favourited a toot of ours", message))
+	case "reblog":
+		app.ircAdapter.Send(fmt.Sprintf("%s reblogged a toot of ours", message))
+  case "moin":
+    app.ircAdapter.Send(fmt.Sprintf("@%s sagt moin!", message))
+	}
 }
 
 // Should be reworked, runs the eventloops of the adapters.
 // The app itself does not not run in a dedicated thread. It is just called by event handling goroutines
 func (app App) Run() {
 	var wg sync.WaitGroup
-	wg.Add(1)
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		app.ircAdapter.Eventloop()
+	}()
+	go func() {
+		defer wg.Done()
+		app.mastodonAdapter.Eventloop()
 	}()
 
 	wg.Wait()

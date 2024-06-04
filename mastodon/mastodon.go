@@ -1,12 +1,12 @@
 package mastodon
 
 import (
-	"github.com/microcosm-cc/bluemonday"
-  "LetsGoTroet/app"
+	"LetsGoTroet/app"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/microcosm-cc/bluemonday"
 	"hash/fnv"
 	"io"
 	"log"
@@ -51,9 +51,9 @@ func (mc MastodonClient) Reply(shorthand string, message string) (string, error)
 	}
 
 	body := url.Values{
-		"status":         {message},
-		// "visibility":     {"unlisted"},
-    "visibility":     {"private"},
+		"status":     {message},
+		"visibility": {"unlisted"},
+		//"visibility":     {"private"},
 		"in_reply_to_id": {toot.Id},
 	}
 	return mc.postStatus(body)
@@ -63,8 +63,8 @@ func (mc MastodonClient) lookupShorthand(messageID string) (*status, error) {
 	row := mc.database.QueryRow("SELECT tootid FROM messages_mastodon WHERE shorthand=?;", messageID)
 	var tootId string
 	err := row.Scan(&tootId)
-  if err != nil || tootId == "" {
-      return nil, fmt.Errorf("Toot not found in database: %s", messageID)
+	if err != nil || tootId == "" {
+		return nil, fmt.Errorf("Toot not found in database: %s", messageID)
 	}
 	toot, err := mc.getStatus(tootId)
 	if err != nil && err.Error() == "404" {
@@ -81,13 +81,11 @@ func (mc MastodonClient) GetMessage(messageID string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("Error retrieving Toot: %w", err)
 	}
-  // TODO: replace <br/> with \n or something to handle multiline messages
-  p := bluemonday.NewPolicy()
-  plainContent := p.Sanitize(toot.Content)
-  indentedContent := "> " + strings.Join(strings.Split(plainContent, "\n"), "\n> ")
+	// TODO: replace <br/> with \n or something to handle multiline messages
+	p := bluemonday.NewPolicy()
+	plainContent := p.Sanitize(toot.Content)
+	indentedContent := "> " + strings.Join(strings.Split(plainContent, "\n"), "\n> ")
 	output := fmt.Sprintf("[%s] Toot by: %s\n%s\n%s", messageID, toot.Account.DisplayName, indentedContent, toot.Url)
-
-  log.Println("Get Message output:", output)
 	return output, err
 }
 
@@ -108,11 +106,11 @@ func (mc MastodonClient) Favorite(messageID string) (bool, error) {
 		return false, err
 	}
 	toot, err = mc.toggleTootFave(toot)
-  if err != nil {
-	  return false, err
-  } else {
-    return toot.Favorited, nil
-  }
+	if err != nil {
+		return false, err
+	} else {
+		return toot.Favorited, nil
+	}
 }
 
 func (mc MastodonClient) Search(context string) (string, error) {
@@ -159,12 +157,68 @@ func (mc MastodonClient) RegisterMessageHandler(handler app.MessageHandler) {
 	mc.notificationHandler = handler
 }
 
+// This eventloop performs 2 tasks, one visibile in code and one is a pure (wanted) side effect
+// First we request every 15 seconds from mastodon if we have new notifications
+// If so these are given to the notificationHandler with a bit of an unusual use of the parameters:
+// - mention and status notifications set the type according to their names, use the message as the reformatted status and provide the shorthand as mesasgeId
+// - reblog and favourite don't need to show the full toot, so message is the user who performed the action and messageId is the URL of the toot
+//
+// The second use is to remind the mastodon server that we still exsist. Since mastodon bearer tokens do not have an expiration date, we want to make sure we're still known
+// otherwise our token might be invalidated at some point.
 func (mc MastodonClient) Eventloop() {
-	// TODO
-	// Check if Auth Token is still valid. If not, login again!
-  
-  // TODO
-  // Check for new Notifications and Pawn them off to mc.MessageHandler
+	log.Println("Masotdon Adapter Loop started")
+	active := false
+	timeoffset, _ := time.ParseDuration("15s")
+	for active {
+		nots, err := mc.getNotifications()
+		if err != nil {
+			log.Println("Error getting Notifications:", err)
+		} else {
+			notifications := *nots
+			for _, value := range notifications {
+				switch value.Type {
+				case "mention":
+					shorthand, err := mc.storeMessage(value.Status)
+					if err != nil {
+						log.Println("Error storing message:", err.Error())
+						continue
+					}
+					formatted, err := mc.GetMessage(shorthand)
+					if err != nil {
+						log.Println("Error getting message:", err.Error())
+						continue
+					}
+					mc.notificationHandler("mention", formatted, shorthand)
+				case "status":
+					shorthand, err := mc.storeMessage(value.Status)
+					if err != nil {
+						log.Println("Error storing message:", err.Error())
+						continue
+					}
+					formatted, err := mc.GetMessage(shorthand)
+					if err != nil {
+						log.Println("Error getting message:", err.Error())
+						continue
+					}
+					mc.notificationHandler("status", formatted, shorthand)
+				case "reblog":
+					mc.notificationHandler("reblog", value.Account.DisplayName, value.Status.Url)
+        case "favourite":
+          if value.Status.Content == "<p>moin</p>" {
+            mc.notificationHandler("moin", value.Account.Account, value.Status.Url)
+          } else {
+					  mc.notificationHandler("favourite", value.Account.DisplayName, value.Status.Url)
+          }
+				default:
+					continue // If it's a notification we can't handle we also don't want to dismiss it
+				}
+				if err = mc.dismissNotification(value); err != nil {
+					log.Println("Error during dismissing notification:", err.Error())
+				}
+			}
+		}
+		time.Sleep(timeoffset)
+	}
 }
 
 func (mc MastodonClient) storeMessage(message status) (string, error) {
@@ -237,10 +291,10 @@ func New(homeserver string, username string, password string, database *sql.DB) 
 		database:            database,
 		homeserver:          homeserver,
 	}
-  acc, err := mc.getOwnAccount()
-  if err != nil {
-    return nil, fmt.Errorf("Unable to get account: %w", err)
-  }
-  mc.account = acc
+	acc, err := mc.getOwnAccount()
+	if err != nil {
+		return nil, fmt.Errorf("Unable to get account: %w", err)
+	}
+	mc.account = acc
 	return &mc, err
 }

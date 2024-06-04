@@ -67,12 +67,12 @@ var handlers = []Handler{
 				operator = false
 			}
 			if operator && channel == ic.channel && user != ic.nick && ic.chan_msg != nil {
-				log.Println("Handing off handling of Message:", user, ":", message)
+				// log.Println("Handing off handling of Message:", user, ":", message)
 				if id, err := ic.storeMessage(user, message); err != nil {
 					log.Println("ERROR while trying to store IRC message:", err)
 					log.Println("Due to the Error above this message will not be handeled")
 				} else {
-					ic.chan_msg(user, message, id)
+					ic.chan_msg("channel.op", message, id)
 				}
 			}
 		},
