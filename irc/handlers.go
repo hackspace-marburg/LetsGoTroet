@@ -1,12 +1,12 @@
 package irc
 
 import (
+	"fmt"
 	"log"
 	"regexp"
 	"strings"
 )
 
-// TODO: find and handle NickServs "register or be renamed"
 var handlers = []Handler{
 	{
 		condition: *regexp.MustCompile(`PING (\S+)`),
@@ -20,6 +20,16 @@ var handlers = []Handler{
 		handler: func(s []string, ic *IrcClient) {
 			// Join channel
 			ic.outgoing <- "JOIN #" + ic.channel
+		},
+	}, {
+		condition: *regexp.MustCompile(":[a-z.0-9]+ 376 " + IRC_USER_REGEX + " :End of /MOTD command."),
+		handler: func(s []string, ic *IrcClient) {
+			if len(ic.password) != 0 {
+				log.Println("Sending password to NickServ")
+				ic.outgoing <- fmt.Sprintf("PRIVMSG NickServ :identify %s %s", ic.nick, ic.password)
+			} else {
+				log.Println("No password to identify nick")
+			}
 		},
 	}, {
 		// Handle NAMES result (provided on channel join as well)
@@ -67,7 +77,7 @@ var handlers = []Handler{
 				operator = false
 			}
 			if operator && channel == ic.channel && user != ic.nick && ic.chan_msg != nil {
-				// log.Println("Handing off handling of Message:", user, ":", message)
+				log.Println("Handing off handling of Message:", user, ":", message)
 				if id, err := ic.storeMessage(user, message); err != nil {
 					log.Println("ERROR while trying to store IRC message:", err)
 					log.Println("Due to the Error above this message will not be handeled")

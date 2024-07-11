@@ -23,6 +23,7 @@ func main() {
 	irchost := os.Getenv("IRC_HOST")
 	channel := os.Getenv("IRC_CHANNEL")
 	nick := os.Getenv("IRC_NICK")
+	nick_pw := os.Getenv("IRC_NICKPASS")
 
 	baseurl := os.Getenv("MASTODON_BASEURL")
 	username := os.Getenv("MASTODON_USERNAME")
@@ -36,6 +37,9 @@ func main() {
 	if err != nil {
 		log.Println("IRC Adapter creation failed:", err)
 		return
+	}
+	if len(nick_pw) > 0 {
+		bot.SetPassword(nick_pw)
 	}
 	// Setup Mastodon adapter
 	mst, err := mastodon.New(baseurl, username, password, db)

@@ -14,7 +14,6 @@ type Adapter interface {
 	Send(message string) (MessageID, error)
 	Reply(messageID MessageID, message string) (MessageID, error)
 	RegisterMessageHandler(MessageHandler)
-	GetMessage(messageID MessageID) (string, error)
 	Eventloop()
 }
 
@@ -24,6 +23,7 @@ type SocialAdapter interface {
 	Favorite(messageID MessageID) (bool, error)
 	Search(context string) (MessageID, error)
 	Delete(messageID MessageID) error
+	GetMessage(messageID MessageID) (string, error)
 }
 
 type App struct {

@@ -33,6 +33,7 @@ type IrcClient struct {
 	nick       string
 	channel    string
 	handlers   []Handler
+	password   string
 	operators  map[string]map[string]bool
 	chan_msg   app.MessageHandler
 	db         *sql.DB
@@ -61,19 +62,19 @@ func (c *IrcClient) Eventloop() {
 			if err != nil {
 				log.Println(err)
 				// Probably something horrible happened. Let's wait a bit
-        duration, _ :=time.ParseDuration("10s")
-        time.Sleep(duration)
+				duration, _ := time.ParseDuration("10s")
+				time.Sleep(duration)
 				continue
 			} else {
-        log.Println("IRC connection established")
-      }
+				log.Println("IRC connection established")
+			}
 
 			outbound := make(chan string, MSG_BUF_LEN)
 			outbound <- "NICK " + c.nick
 			outbound <- "USER " + c.nick + " * * :LetsGoTroet Bot"
 
-      c.connection = irccon
-      c.outgoing = outbound
+			c.connection = irccon
+			c.outgoing = outbound
 		}
 
 		c.connection.SetReadDeadline(time.Now().Add(timeoffset))
@@ -87,6 +88,8 @@ func (c *IrcClient) Eventloop() {
 				log.Println("Unusual Error on recieving IRC Messages:", err)
 				log.Println("Turning off IRC client.")
 				c.connection = nil
+				// duration, _ :=time.ParseDuration("120s") // In this case we wait 120 seconds so the IRC server can timeout our client
+				// time.Sleep(duration)
 				continue // Don't do anything else, our client is broken
 			}
 
@@ -94,7 +97,7 @@ func (c *IrcClient) Eventloop() {
 			for continue_sending {
 				select {
 				case next_msg := <-c.outgoing:
-					//log.Println("Sending:", next_msg)
+					// log.Println("Sending:", next_msg)
 					_, err := c.connection.Write(append([]byte(next_msg), []byte("\r\n")...))
 					if err != nil {
 						log.Println(err)
@@ -128,6 +131,11 @@ func (c *IrcClient) Eventloop() {
 	c.connection.Close()
 }
 
+// Used to set the password given to NickServ to Identify upon being requested to do so
+func (c *IrcClient) SetPassword(password string) {
+	c.password = password
+}
+
 // The IrcClient's Send function converts a message to a new PRIVMSG command
 // to the channel configured during creation of the IrcClient (see irc.New).
 // This command is not sent directly but appended to an outgoing messages queue handeled in IrcClient.Eventloop().
@@ -139,11 +147,6 @@ func (c IrcClient) Send(content string) (string, error) {
 	}
 	c.storeMessage(c.nick, content)
 	return content, nil
-}
-
-func (c IrcClient) GetMessage(messageID string) (string, error) {
-	//TODO
-	return "", nil
 }
 
 // Replies to a message given by messageid
@@ -216,6 +219,7 @@ func New(adress string, username string, channel string, db *sql.DB) (*IrcClient
 		outgoing:   nil,
 		nick:       username,
 		channel:    channel,
+		password:   "",
 		handlers:   handlers,
 		operators:  make(map[string]map[string]bool),
 		db:         db,
