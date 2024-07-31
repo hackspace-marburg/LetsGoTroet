@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -17,6 +18,7 @@ import (
 
 const MSG_BUF_LEN = 10
 const IRC_USER_REGEX = `[a-zA-Z0-9-_\[\]\{\}\\\|` + "`" + `]{2,9}`
+const IRC_MESSAGE_LENGTH_MAX = 512
 const create_table = `
   CREATE TABLE IF NOT EXISTS messages_irc(
     id INTEGER NOT NULL PRIMARY KEY,
@@ -28,15 +30,15 @@ const create_table = `
 `
 
 type IrcClient struct {
-	connection *tls.Conn
-	outgoing   chan string
-	nick       string
-	channel    string
-	handlers   []Handler
-	password   string
-	operators  map[string]map[string]bool
-	chan_msg   app.MessageHandler
-	db         *sql.DB
+	connection  *tls.Conn
+	outgoing    chan string
+	nick        string
+	channel     string
+	handlers    []Handler
+	password    string
+	operators   map[string]map[string]bool
+	app_handler app.MessageHandler
+	db          *sql.DB
 }
 
 type handlerfn func(regex_condition []string, client *IrcClient)
@@ -138,14 +140,39 @@ func (c *IrcClient) SetPassword(password string) {
 
 // The IrcClient's Send function converts a message to a new PRIVMSG command
 // to the channel configured during creation of the IrcClient (see irc.New).
+// To do the actual sending the interal irc.send is used (due to that allowing different targets but straying away from the adapter specification)
+func (c IrcClient) Send(content string) (string, error) {
+	return c.send(content, c.channel)
+}
+
+// Since reply might reply to private messages the sending should support also sending to different destinations.
+// This is the internal send which can specify the destination.
 // This command is not sent directly but appended to an outgoing messages queue handeled in IrcClient.Eventloop().
 // Consequently it will always return nil, since we cannot track errors here.
-func (c IrcClient) Send(content string) (string, error) {
+func (c IrcClient) send(content string, destination string) (string, error) {
 	lines := strings.Split(content, "\n")
-	for _, line := range lines {
-		c.outgoing <- "PRIVMSG #" + c.channel + " :" + line
+  for _, line := range lines {
+    target :=  "PRIVMSG " + destination + " :"
+		command := target + line
+    if len(command) > IRC_MESSAGE_LENGTH_MAX {
+      maxline := IRC_MESSAGE_LENGTH_MAX - len(target)
+      nummessages := math.Ceil(float64(len(line)) / float64(maxline))
+      // TODO: This line cutting can cut through a rune (utf-8 character)
+      // You'd need to convert to []rune for splitting 
+      // while making sure that the line length (in bytes) does not exceed IRC_MESSAGE_LENGTH_MAX
+      for i := 0; i < int(nummessages); i++ {
+        from := i * maxline
+        to := (i+1) * maxline
+        if to > len(line) {
+          to = len(line)
+        }
+        c.send(line[from:to], destination)
+      } 
+    }
+		// log.Println(command)
+		c.outgoing <- command
 	}
-	c.storeMessage(c.nick, content)
+	c.storeMessage(c.nick, destination, content)
 	return content, nil
 }
 
@@ -157,37 +184,53 @@ func (c IrcClient) Reply(messageid string, content string) (string, error) {
 	// get message/user from DB
 	// if not found return a not-found error
 	// else return c.Send(user + ": " + content)
-	// Just a dummy r.n. to comply to app.Handler
 	id, err := strconv.Atoi(messageid)
 	if err != nil {
 		return "", err
 	}
-	row := c.db.QueryRow("SELECT user FROM messages_irc WHERE id=?", id)
-	var sender string // irc user names are never longer than 9 characters
-	if err := row.Scan(&sender); err != nil {
+	row := c.db.QueryRow("SELECT user, channel FROM messages_irc WHERE id=?", id)
+	var sender string
+  var channel string
+	if err := row.Scan(&sender, &channel); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", fmt.Errorf("Message not found in IRC Message database: %s", messageid)
 		} else {
 			return "", err
 		}
 	}
+	// TODO: This is not compliant to IRC RFCs as channels could have other prefixes than "#"
+	var channel_message = strings.HasPrefix(channel, "#")
 	var toSend string
-	if strings.Contains(content, " %s ") {
+	if strings.Contains(content, "%s") {
+		// If the content contains a %s (like a format string) replace it with the recipient
+    // TODO: Investigate if this is *actually* a good idea to do or make this vulnerable to something. Probably...?
 		toSend = fmt.Sprintf(content, sender)
-	} else {
+	} else if channel_message {
+		// This is a message with no palceholder for the user directed to a channel, we should mention them at the beginning instead
 		toSend = fmt.Sprint(sender, ": ", content)
+	} else {
+		// This is a direct message, we don't need to mention
+		toSend = content
 	}
-	return c.Send(toSend)
+
+	// Set target based on if the message was sent to a channel or a direct message
+	var target string
+	if channel_message {
+		target = channel
+	} else {
+		target = sender
+	}
+	return c.send(toSend, target)
 }
 
 func (c *IrcClient) RegisterMessageHandler(handler app.MessageHandler) {
 	log.Println("IRC -> RegisterMessageHandler")
-	c.chan_msg = handler
+	c.app_handler = handler
 }
 
-func (c IrcClient) storeMessage(user string, message string) (string, error) {
+func (c IrcClient) storeMessage(source string, target string, message string) (string, error) {
 	var id int64
-	res, err := c.db.Exec("INSERT INTO messages_irc VALUES(NULL,?,?,?,?);", time.Now(), c.channel, user, message)
+	res, err := c.db.Exec("INSERT INTO messages_irc VALUES(NULL,?,?,?,?);", time.Now(), target, source, message)
 	if err != nil {
 		return "", fmt.Errorf("Error during inserting message in database: %w", err)
 	}
@@ -209,20 +252,20 @@ func New(adress string, username string, channel string, db *sql.DB) (*IrcClient
 		return nil, err
 	}
 
-	if strings.HasPrefix(channel, "#") {
-		channel = channel[1:]
+	if !strings.HasPrefix(channel, "#") {
+		channel = "#" + channel
 	}
 	channel = strings.ToLower(channel)
 
 	return &IrcClient{
-		connection: nil,
-		outgoing:   nil,
-		nick:       username,
-		channel:    channel,
-		password:   "",
-		handlers:   handlers,
-		operators:  make(map[string]map[string]bool),
-		db:         db,
-		chan_msg:   nil,
+		connection:  nil,
+		outgoing:    nil,
+		nick:        username,
+		channel:     channel,
+		password:    "",
+		handlers:    handlers,
+		operators:   make(map[string]map[string]bool),
+		db:          db,
+		app_handler: nil,
 	}, nil
 }

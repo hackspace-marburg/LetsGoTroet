@@ -28,6 +28,9 @@ func main() {
 	baseurl := os.Getenv("MASTODON_BASEURL")
 	username := os.Getenv("MASTODON_USERNAME")
 	password := os.Getenv("MASTODON_PASSWORD")
+	id := os.Getenv("MASTODON_ID")
+	secret := os.Getenv("MASTODON_SECRET")
+	access_token := os.Getenv("MASTODON_ACCESS_TOKEN")
 
 	// Setup database
 	db := setupDB(SQLITE_FILENAME)
@@ -42,7 +45,7 @@ func main() {
 		bot.SetPassword(nick_pw)
 	}
 	// Setup Mastodon adapter
-	mst, err := mastodon.New(baseurl, username, password, db)
+	mst, err := mastodon.New(baseurl, id, secret, access_token, username, password, db)
 	if err != nil {
 		log.Println(err)
 		return

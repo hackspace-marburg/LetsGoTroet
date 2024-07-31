@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/microcosm-cc/bluemonday"
 	"hash/fnv"
 	"io"
 	"log"
@@ -14,6 +13,9 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/microcosm-cc/bluemonday"
+	"golang.org/x/net/html"
 )
 
 const create_table = `
@@ -24,6 +26,8 @@ const create_table = `
     content TEXT NOT NULL
   );
 `
+// exclude similar symbols (O and 0, I and l), but include some other quite unusual stuff for fun
+const base64mod = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz123456789.,;#!?"
 
 type MastodonClient struct {
 	notificationHandler app.MessageHandler
@@ -81,11 +85,14 @@ func (mc MastodonClient) GetMessage(messageID string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("Error retrieving Toot: %w", err)
 	}
-	// TODO: replace <br/> with \n or something to handle multiline messages
-	p := bluemonday.NewPolicy()
-	plainContent := p.Sanitize(toot.Content)
-	indentedContent := "> " + strings.Join(strings.Split(plainContent, "\n"), "\n> ")
-	output := fmt.Sprintf("[%s] Toot by: %s\n%s\n%s", messageID, toot.Account.DisplayName, indentedContent, toot.Url)
+  p := bluemonday.StrictPolicy()
+	plainContent := p.Sanitize( strings.TrimRight(strings.ReplaceAll(toot.Content, "</p>", "</p>\n"), "\n"))
+  unescapedContent := html.UnescapeString(plainContent)
+	indentedContent := "> " + strings.Join(strings.Split(unescapedContent, "\n"), "\n> ")
+  for i, media := range toot.Attachments {
+    indentedContent += fmt.Sprintf("\n Attachment %d: %s", i+1, media.Url)
+  }
+	output := fmt.Sprintf("[%s] Toot by: %s (%s)\n%s\n%s", messageID, toot.Account.DisplayName, toot.Account.Username, indentedContent, toot.Url)
 	return output, err
 }
 
@@ -130,8 +137,7 @@ func (mc MastodonClient) Search(context string) (string, error) {
 }
 
 func encodeId(id string) string {
-	// exclude similar symbols (O and 0, I and l), but include some other quite unusual stuff for fun
-	madEncoding := base64.NewEncoding("ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz123456789.,;#!?").WithPadding(base64.NoPadding)
+	madEncoding := base64.NewEncoding(base64mod).WithPadding(base64.NoPadding)
 	h := fnv.New32()
 	h.Write([]byte(id))
 	return madEncoding.EncodeToString(h.Sum(nil))
@@ -203,12 +209,12 @@ func (mc MastodonClient) Eventloop() {
 					mc.notificationHandler("status", formatted, shorthand)
 				case "reblog":
 					mc.notificationHandler("reblog", value.Account.DisplayName, value.Status.Url)
-        case "favourite":
-          if value.Status.Content == "<p>moin</p>" {
-            mc.notificationHandler("moin", value.Account.Account, value.Status.Url)
-          } else {
-					  mc.notificationHandler("favourite", value.Account.DisplayName, value.Status.Url)
-          }
+				case "favourite":
+					if value.Status.Content == "<p>moin</p>" {
+						mc.notificationHandler("moin", value.Account.Account, value.Status.Url)
+					} else {
+						mc.notificationHandler("favourite", value.Account.DisplayName, value.Status.Url)
+					}
 				default:
 					continue // If it's a notification we can't handle we also don't want to dismiss it
 				}
@@ -233,8 +239,7 @@ func (mc MastodonClient) storeMessage(message status) (string, error) {
 	return shorthand, nil
 }
 
-func New(homeserver string, username string, password string, database *sql.DB) (*MastodonClient, error) {
-
+func New(homeserver string, client_id string, client_secret string, access_token string, username string, password string, database *sql.DB) (*MastodonClient, error) {
 	if _, err := database.Exec(create_table); err != nil {
 		return nil, err
 	}
@@ -242,51 +247,69 @@ func New(homeserver string, username string, password string, database *sql.DB) 
 	log.Println("Initializing Mastodon Bot")
 
 	client := &http.Client{}
-	reply, err := client.PostForm(fmt.Sprintf(`https://%s/api/v1/apps`, homeserver), url.Values{
-		"client_name":   {"LetsGoTroet"},
-		"redirect_uris": {"urn:ietf:wg:oauth:2.0:oob"},
-		"scopes":        {"read write push"},
-	})
-	if err != nil {
-		return nil, err
-	}
+	var reply *http.Response
+	var err error
+	if len(access_token) == 0 {
+		log.Println("No Access Token provided. Trying to login with client and user credentials")
+		if len(client_id) == 0 || len(client_secret) == 0 {
+			log.Println("No Client ID provided. Generating new one.")
+			reply, err := client.PostForm(fmt.Sprintf(`https://%s/api/v1/apps`, homeserver), url.Values{
+				"client_name":   {"LetsGoTroet"},
+				"redirect_uris": {"urn:ietf:wg:oauth:2.0:oob"},
+				"scopes":        {"read write push"},
+			})
+			if err != nil {
+				return nil, err
+			}
 
-	body, err := io.ReadAll(reply.Body)
-	if err != nil {
-		return nil, err
-	}
-	var appsResponse appsReply
-	err = json.Unmarshal(body, &appsResponse)
-	if err != nil {
-		log.Println("Unmarshalling /v1/apps response failed")
-		log.Println(err)
-	}
+			body, err := io.ReadAll(reply.Body)
+			if err != nil {
+				return nil, err
+			}
+			var appsResponse appsReply
+			err = json.Unmarshal(body, &appsResponse)
+			if err != nil {
+				log.Println("Unmarshalling /v1/apps response failed")
+				log.Println(err)
+			}
+			log.Println("Generated ClientID and Secret for OOB Auth with scopes ", appsResponse.Scopes, ". Please keep save and add to config")
+			log.Println("ID:", appsResponse.ClientId)
+			log.Println("Secret:", appsResponse.ClientSecret)
+			client_id = appsResponse.ClientId
+			client_secret = appsResponse.ClientSecret
+		}
+		if len(username) == 0 || len(password) == 0 {
+			// TODO: Assume client id does OOB and do oauth. In this Case the client needs to be created in the app (based on input from IRC).
+			return nil, fmt.Errorf("Neither Access Token, nor Credentials provided. Please do out of band OAuth manually for now")
+		}
+		reply, err = client.PostForm(fmt.Sprintf(`https://%s/oauth/token`, homeserver), url.Values{
+			"client_id":     {client_id},
+			"client_secret": {client_secret},
+			"username":      {username},
+			"password":      {password},
+			"grant_type":    {"password"},
+			"scope":         {"read write push"},
+		})
+		if err != nil {
+			return nil, err
+		}
 
-	reply, err = client.PostForm(fmt.Sprintf(`https://%s/oauth/token`, homeserver), url.Values{
-		"client_id":     {appsResponse.ClientId},
-		"client_secret": {appsResponse.ClientSecret},
-		"username":      {username},
-		"password":      {password},
-		"grant_type":    {"password"},
-		"scope":         {"read write push"},
-	})
-	if err != nil {
-		return nil, err
+		body, err := io.ReadAll(reply.Body)
+		if err != nil {
+			return nil, err
+		}
+		var tokenResponse tokenReply
+		err = json.Unmarshal(body, &tokenResponse)
+		if err != nil {
+			return nil, err
+		}
+		access_token = tokenResponse.AccessToken
 	}
-
-	body, err = io.ReadAll(reply.Body)
-	if err != nil {
-		return nil, err
-	}
-	var tokenResponse tokenReply
-	err = json.Unmarshal(body, &tokenResponse)
-	if err != nil {
-		return nil, err
-	}
-
+	// TODO: if no access token and missing username, password do proper OOB oauth
+	// missing client_id and secret can be generated against
 	var mc = MastodonClient{
 		notificationHandler: nil,
-		token:               tokenResponse.AccessToken,
+		token:               access_token,
 		client:              client,
 		database:            database,
 		homeserver:          homeserver,

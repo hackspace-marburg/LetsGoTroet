@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -140,7 +139,7 @@ func (mc MastodonClient) deleteToot(toot *status) error {
 	// The request response is not used. It should be the deleted toot when the delete was successfull
 	_, err = mc.executeRequest(request)
 	if err != nil {
-		return fmt.Errorf("Error during boost request: %w", err)
+		return fmt.Errorf("Error during delete request: %w", err)
 	}
 	return nil
 }
@@ -183,7 +182,6 @@ func (mc MastodonClient) dismissNotification(event notification) error {
 func (mc MastodonClient) search(content string) (*search, error) {
 	encoded_content := url.QueryEscape(content)
 	url := fmt.Sprintf(`https://%s/api/v2/search?q=%s&resolve=true`, mc.homeserver, encoded_content)
-	log.Println(url)
 	request, err := http.NewRequest("GET", url, strings.NewReader(""))
 	if err != nil {
 		return nil, fmt.Errorf("Error building request for search: %w", err)

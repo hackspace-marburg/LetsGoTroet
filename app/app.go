@@ -2,9 +2,22 @@ package app
 
 import (
 	"fmt"
+	// "log"
 	"strings"
 	"sync"
 )
+
+const command_prefix = "."
+
+type commandfn func(app *App, message_type string, message string, messageID string)
+
+type command struct {
+	name                 string
+	description          string
+	nargs                int
+	elevated_permissions bool
+	action               commandfn
+}
 
 type MessageHandler func(source string, message string, messageID string)
 
@@ -42,89 +55,37 @@ func New(irc Adapter, mastodon SocialAdapter) App {
 	return app
 }
 
-func (app App) handleIRCMessage(msgtype string, message string, messageID string) {
-	var err error
-	switch {
-	case strings.HasPrefix(message, ".t "):
-		var id string
-		tootMessage := strings.TrimPrefix(message, ".t ")
-		id, err = app.mastodonAdapter.Send(tootMessage)
-		if err == nil {
-			app.ircAdapter.Send(fmt.Sprintf("[%s] Toot successfull", id))
-			tootmessage, _ := app.mastodonAdapter.GetMessage(id)
-			app.ircAdapter.Send(tootmessage)
-		} else {
-			app.ircAdapter.Reply(messageID, fmt.Sprintf("Error during sending: %v", err))
-		}
-
-	case strings.HasPrefix(message, ".r "):
-		split := strings.SplitAfterN(strings.TrimPrefix(message, ".r "), " ", 2)
-		replyTo := strings.TrimSuffix(split[0], " ")
-		message := split[1]
-		id, err := app.mastodonAdapter.Reply(replyTo, message)
-		if err == nil {
-			app.ircAdapter.Send(fmt.Sprintf("[%s] Reply successfull", id))
-			tootmessage, _ := app.mastodonAdapter.GetMessage(id)
-			app.ircAdapter.Send(tootmessage)
-		} else {
-			app.ircAdapter.Reply(messageID, fmt.Sprintf("Error replying: %v", err))
-		}
-
-	case strings.HasPrefix(message, ".?"):
-		_, err = app.ircAdapter.Reply(messageID, "I'm sorry %s I'm afraid I can't do that")
-
-	case strings.HasPrefix(message, ".d "):
-		tootID := strings.TrimPrefix(message, ".d ")
-		err = app.mastodonAdapter.Delete(tootID)
-		if err == nil {
-			app.ircAdapter.Send(fmt.Sprintf("Successfully deleted toot %s", tootID))
-		} else {
-			app.ircAdapter.Send(fmt.Sprintf("Error deleting toot: %v", err))
-		}
-
-	case strings.HasPrefix(message, ".s "):
-		// search & load toot
-		content := strings.TrimPrefix(message, ".s ")
-		tootMessage, err := app.mastodonAdapter.Search(content)
-		if err == nil {
-			if tootMessage != "" {
-				app.ircAdapter.Send(tootMessage)
+func (app *App) handleIRCMessage(msgtype string, message string, messageID string) {
+	// var err error
+	if strings.HasPrefix(msgtype, "channel.") {
+    // log.Println("Handling Channel Message")
+		for _, cmd := range channel_commands {
+      // TODO: This is kind of jank. Split message at earliest possible whitespace and put that part into a map[string, command]
+      // Maybe have that map even replace the current commands slice
+			var space string
+			if cmd.nargs > 0 {
+				space = " "
 			} else {
-				app.ircAdapter.Send(fmt.Sprintf("No toot found"))
+				space = ""
 			}
-		} else {
-			app.ircAdapter.Send(fmt.Sprintf("Error finding toot: %v", err))
+      // log.Printf("Looking for '%s'\n", command_prefix+cmd.name+space)
+			if (!cmd.elevated_permissions || strings.HasSuffix(msgtype, ".op")) &&
+				strings.HasPrefix(message, command_prefix+cmd.name+space) {
+          cmd.action(app, msgtype, message, messageID)
+			}
 		}
+	}
+	if strings.HasPrefix(msgtype, "direct.") {
+    // log.Println("Handling /query message")
+		// TODO: Define specific commands for direct messages?
 
-	case strings.HasPrefix(message, ".b "):
-		tootID := strings.TrimPrefix(message, ".b ")
-		boosted, err := app.mastodonAdapter.Boost(tootID)
-		if err == nil {
-			var action string
-			if boosted {
-				action = "Boosted"
-			} else {
-				action = "Un-Boosted"
-			}
-			app.ircAdapter.Send(fmt.Sprintf("%s %s", action, tootID))
-		} else {
-			app.ircAdapter.Send(fmt.Sprintf("Error boosting toot: %v", err))
+    // For now always return a command list
+    reply := "Hi %s\n the only reply via query currently supported is a command list:\n"
+		command_descriptions := ""
+		for _, cmd := range channel_commands {
+			command_descriptions = command_descriptions + fmt.Sprintln(command_prefix+cmd.name, cmd.description)
 		}
-
-	case strings.HasPrefix(message, ".f "):
-		tootID := strings.TrimPrefix(message, ".f ")
-		boosted, err := app.mastodonAdapter.Favorite(tootID)
-		if err == nil {
-			var action string
-			if boosted {
-				action = "Faved"
-			} else {
-				action = "Un-Faved"
-			}
-			app.ircAdapter.Send(fmt.Sprintf("%s %s", action, tootID))
-		} else {
-			app.ircAdapter.Send(fmt.Sprintf("Error favoriting toot: %s", err))
-		}
+		app.ircAdapter.Reply(messageID, reply + command_descriptions)
 	}
 }
 
@@ -152,8 +113,8 @@ func (app App) handleMastodonMessage(msgtype string, message string, messageID s
 		app.ircAdapter.Send(fmt.Sprintf("%s favourited a toot of ours", message))
 	case "reblog":
 		app.ircAdapter.Send(fmt.Sprintf("%s reblogged a toot of ours", message))
-  case "moin":
-    app.ircAdapter.Send(fmt.Sprintf("@%s sagt moin!", message))
+	case "moin":
+		app.ircAdapter.Send(fmt.Sprintf("@%s sagt moin!", message))
 	}
 }
 
