@@ -150,9 +150,14 @@ func (c IrcClient) Send(content string) (string, error) {
 // This command is not sent directly but appended to an outgoing messages queue handeled in IrcClient.Eventloop().
 // Consequently it will always return nil, since we cannot track errors here.
 func (c IrcClient) send(content string, destination string) (string, error) {
+  command := "PRIVMSG"
+  if strings.HasPrefix(destination, "#") {
+    // Channels only get "NOTICE"
+    command = "NOTICE"
+  }
 	lines := strings.Split(content, "\n")
   for _, line := range lines {
-    target :=  "PRIVMSG " + destination + " :"
+    target :=  command + " " + destination + " :"
 		command := target + line
     if len(command) > IRC_MESSAGE_LENGTH_MAX {
       maxline := IRC_MESSAGE_LENGTH_MAX - len(target)
